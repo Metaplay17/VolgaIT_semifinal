@@ -1,106 +1,105 @@
-from flask import Flask, request, Response
-import json
+import flask_jwt_extended
+from flask import Flask, request, jsonify
 import uuid
 import psycopg2
-from http import HTTPStatus
-from datetime import time, datetime
+from datetime import datetime
+from flask_jwt_extended import create_access_token, jwt_required, JWTManager, get_jwt
+from ServerFunctions import *
 
 app = Flask(__name__)
+app.config["SECRET_KEY"] = "secret-key"
+jwt = JWTManager(app)
 
-authorize_data = {
-    "user_id": "admin2",
-    "privilege": "admin"
-}
-transport_columns_names = ["ID", "canberented", "transporttype", "model", "color", "identifier", "description",
-                           "latitude", "longitude", "minuteprice", "dayprice", "ownerID"]
+transport_columns_names = ["id", "canBeRented", "transportType", "model", "color", "identifier", "description",
+                           "latitude", "longitude", "minutePrice", "dayPrice", "ownerid"]
 
-connection = psycopg2.connect(user="postgres", password="qazedcrfvs1A")
-cursor = connection.cursor()
+user_parameters = ["id", "username", "password", "privilege"]
 
 
-def get_set_of_usernames():
-    cursor.execute("SELECT USERNAME FROM USERS")
-    usernames = set([name[0] for name in cursor.fetchall()])
-    return usernames
-
-def is_admin(userid):
-    cursor.execute("SELECT privileges FROM USERS WHERE id = %s", (userid, ))
-    curr_user_data = cursor.fetchall()
-    if curr_user_data[0][0] == "admin":
-        return True
-    return False
-def add_250000_to_balance(user_id):
-    cursor.execute('''SELECT * FROM BALANCES WHERE userid = %s''', (user_id,))
-    curr_balance_data = cursor.fetchall()
-    cursor.execute('''UPDATE BALANCES SET balance = %s WHERE userid = %s''',
-                   (curr_balance_data[0][1] + 250000), user_id)
-    connection.commit()
-
-def get_balance_by_id(user_id):
-    cursor.execute('''SELECT balance FROM BALANCES WHERE userid = %s''', (user_id, ))
-    curr_data = cursor.fetchall()
-    return curr_data[0][1]
-
-def get_rent_price_by_id(transport_id, rent_type):
-    cursor.execute("SELECT * FROM TRANSPORT WHERE id = %s", (transport_id, ))
-    curr_data = cursor.fetchall()
-    if rent_type == "Minutes":
-        print(curr_data)
-        return curr_data[0][9]
-    elif rent_type == "Days":
-        return curr_data[0][10]
-    else:
-        return False
-
-def cancel_money_for_rent(user_id, total):
-    cursor.execute('''SELECT balance FROM BALANCES WHERE userid = %s''', (user_id, ))
-    curr_balace = cursor.fetchall()
-    curr_balace = curr_balace[0][0]
-    curr_balace -= total
-    cursor.execute('''UPDATE BALANCES SET balance = %s WHERE userid = %s''', (curr_balace, user_id))
-
-def get_minutes_from_str(string):
-    return datetime.strptime(string, "%Y-%m-%d %H:%M:%S")
-
-
-def get_days_from_str(string):
-    return datetime.strptime(string, "%Y-%m-%d").day
-
-
-def get_onwerid_by_transport_id(transport_id):
-    cursor.execute("SELECT ownerID FROM TRANSPORT WHERE ID = %s", (transport_id,))
-    owner_id = cursor.fetchall()
-    owner_id = owner_id[0][0]
-    return owner_id
+def authenticate(username, password):
+    curr_json = request.get_json()
+    curr_username = curr_json["username"]
+    curr_password = curr_json["password"]
+    cursor.execute("SELECT password, id FROM USERS WHERE username = %s", (curr_username,))
+    user_password = cursor.fetchall()
+    user_password = user_password[0]
+    if user_password[0] == curr_password:
+        cursor.execute("SELECT * FROM USERS WHERE username = %s", (curr_username,))
+        curr_user_data = cursor.fetchall()
+        curr_user_data = curr_user_data[0]
+        return curr_user_data
+    return None
 
 
 @app.get("/api/Account/Me")
-def index_account_me(data=authorize_data):
-    if data["user_id"]:
-        return {
-            "user id": data["user_id"],
-            "privilege": data["privilege"],
-            "balance": get_balance_by_id(data["user_id"])
-        }
+@jwt_required()
+def index_account_me():
+    curr_id = get_id_from_token()
+    try:
+        return get_all_user_data_by_id(curr_id)
+    except:
+        return "Unauthorized", 401
+
 
 @app.get("/api/Admin/Account")
-def admin_get_all_accounts(data=authorize_data):
-    if is_admin(data["user_id"]):
+@jwt_required()
+def admin_get_all_accounts():
+    curr_id = get_id_from_token()
+    if is_admin(curr_id):
         cursor.execute('''SELECT * FROM USERS''')
         return cursor.fetchall()
     else:
         return "Access denied", 403
 
+
 @app.get("/api/Admin/Account/<user_id>")
-def admin_get_account_data(user_id, data=authorize_data):
-    if not is_admin(data["user_id"]):
+@jwt_required()
+def admin_get_account_data(user_id):
+    curr_id = get_id_from_token()
+    if not is_admin(curr_id):
         return "Access denied", 403
-    cursor.execute('''SELECT * FROM USERS WHERE userid = %s''', (user_id, ))
+    cursor.execute('''SELECT * FROM USERS WHERE userid = %s''', (user_id,))
     return cursor.fetchall()
 
+
+@app.post("/api/Account/SignIn")
+def index_sign_in():
+    curr_json = request.get_json()
+    data = authenticate(curr_json["username"], curr_json["password"])
+    if data:
+        return {
+            "token": create_access_token(identity=data[0])
+        }, 200
+    return "", 403
+
+@app.post("/api/Account/SignUp")
+def index_sign_up():
+    curr_json = request.get_json()
+    curr_username = curr_json["username"]
+    curr_password = curr_json["password"]
+    curr_id = str(uuid.uuid4())
+    usernames = get_set_of_usernames()
+    if curr_username not in usernames:
+        output = {
+            "id": curr_id,
+            "username": curr_username,
+            "password": curr_password,
+            "privilege": "user"
+        }
+        cursor.execute("INSERT INTO USERS (id, username, password, privilege) VALUES (%s, %s, %s, %s)",
+                       (curr_id, curr_username, curr_password, "user"))
+        cursor.execute("INSERT INTO BALANCES (userid, balance) VALUES (%s, %s)",
+                       (curr_id, 0))
+        connection.commit()
+        return output, 200
+    return f"Username {curr_username} is already used", 409
+
+
 @app.post("/api/Admin/Account")
-def admin_create_account(data=authorize_data):
-    if not is_admin(data["privilege"]):
+@jwt_required
+def admin_create_account():
+    curr_id = get_id_from_token()
+    if not is_admin(curr_id):
         return "Access denied", 403
     curr_json = request.get_json()
     username = curr_json["username"]
@@ -115,68 +114,59 @@ def admin_create_account(data=authorize_data):
     cursor.execute("INSERT INTO BALANCES (userid, balance) VALUES (%s, %s)", (user_id, balance))
     connection.commit()
 
-@app.put("/api/Admin/Account/<user_id>")
-def admin_change_account(user_id, data=authorize_data):
-    if not is_admin(data["user_id"]):
-        return "Access denied", 403
-    cursor.execute('''UPDATE USERS ''')
-    cursor.execute('''UPDATE BALANCES''')
-
-
-@app.post("/api/Account/SignIn")
-def index_sign_in():
-    curr_json = request.get_json()
-    curr_username = curr_json["username"]
-    curr_password = curr_json["password"]
-    cursor.execute("SELECT password, id FROM USERS WHERE username = %s", (curr_username,))
-    row = cursor.fetchall()
-    if row[0][0] == curr_password:
-        cursor.execute("SELECT id FROM USERS WHERE username = %s", (curr_username,))
-        user_id = row[0][1]
-        user_privilege = row[0][3]
-        authorize_data["user_id"] = user_id
-        authorize_data["privilege"] = user_privilege
-        return 200
-    return "Incorrect username/password", 409
-
-
-@app.post("/api/Account/SignUp")
-def index_sign_up():
-    curr_json = request.get_json()
-    curr_username = curr_json["username"]
-    curr_password = curr_json["password"]
-    curr_id = str(uuid.uuid4())
-    cursor.execute("SELECT USERNAME FROM USERS")
-    usernames = get_set_of_usernames()
-    if curr_username not in usernames:
-        cursor.execute("INSERT INTO USERS (id, username, password, privilege) VALUES (%s, %s, %s, %s)",
-                       (curr_id, curr_username, curr_password, "user"))
-        cursor.execute("INSERT INTO BALANCES (userid, balance) VALUES (%s, %s)",
-                       (curr_id, 0))
-        connection.commit()
-        return 200
-    return f"Username {curr_username} is already used", 409
-
 
 @app.post("/api/Account/SignOut")
-def index_sign_out(data=authorize_data):
-    data["user_id"] = False
-    data["privilege"] = False
-    return 200
+@jwt_required()
+def index_sign_out():
+    curr_token = request.headers["Authorization"][7:]
+    return "", 200
 
 
 @app.put("/api/Account/Update")
-def index_update_account(data=authorize_data):
-    if data["user_id"]:
-        curr_json = request.get_json()
-        new_username = curr_json["username"]
-        new_password = curr_json["password"]
-        usernames = get_set_of_usernames()
-        if new_username not in usernames:
-            cursor.execute("UPDATE USERS SET username = %s WHERE id = %s", (new_username, data["user_id"]))
-            cursor.execute("UPDATE USERS SET password = %s WHERE id = %s", (new_password, data["user_id"]))
-            return "", 200
-        return
+@jwt_required()
+def index_update_account():
+    curr_id = get_id_from_token()
+    curr_json = request.get_json()
+    new_username = curr_json["username"]
+    new_password = curr_json["password"]
+    usernames = get_set_of_usernames()
+    if new_username not in usernames:
+        cursor.execute("UPDATE USERS SET username = %s WHERE id = %s", (new_username, curr_id))
+        cursor.execute("UPDATE USERS SET password = %s WHERE id = %s", (new_password, curr_id))
+        return "", 200
+    return "Username is already used", 409
+
+
+@app.put("/api/Admin/Account/<user_id>")
+@jwt_required()
+def admin_change_account(user_id):
+    curr_id = get_id_from_token()
+    if not is_admin(curr_id):
+        return "Access denied", 403
+    curr_json = request.get_json()
+    new_username = curr_json["username"]
+    if new_username in get_set_of_usernames():
+        return "Username is already used", 409
+    new_password = curr_json["password"]
+    new_privilege = "admin" if curr_json["isAdmin"] else "user"
+    new_balance = curr_json["balance"]
+    cursor.execute('''UPDATE USERS SET username = %s, password = %s, privilege = % WHERE id = %''',
+                   (new_username, new_password, new_privilege, user_id))
+    cursor.execute('''UPDATE BALANCES SET balance = %s WHERE userid = %s''', (new_balance, user_id))
+    connection.commit()
+    return "Done", 200
+
+
+@app.delete("/api/Admin/Account/<user_id>")
+@jwt_required()
+def admin_delete_account(user_id):
+    curr_id = get_id_from_token()
+    if not is_admin(curr_id):
+        return "Access denied", 403
+    cursor.execute("DELETE FROM USERS WHERE id = %s", (user_id,))
+    cursor.execute("DELETE FROM BALANCES WHERE id = %s", (user_id,))
+    connection.commit()
+    return "Done", 200
 
 
 @app.get("/api/Transport/<transport_id>")
@@ -184,59 +174,140 @@ def index_get_transport_data_by_id(transport_id):
     global transport_columns_names
     cursor.execute("SELECT * FROM TRANSPORT WHERE id = %s", (str(transport_id),))
     curr_transport_data = cursor.fetchall()
-    print(curr_transport_data)
+    curr_transport_data = curr_transport_data[0]
     if len(curr_transport_data) != 0:
         output = dict()
         for i in range(1, 12):
-            output[transport_columns_names[i]] = curr_transport_data[0][i]
+            output[transport_columns_names[i]] = curr_transport_data[i]
         print(output)
         return output
-    return "There is no this transport's in database", 404
+    return "There is no this transport in database", 404
+
+
+@app.get("/api/Admin/Transport")
+@jwt_required()
+def admin_get_transport_list():
+    curr_id = get_id_from_token()
+    if not is_admin(curr_id):
+        return "Access denied", 403
+    curr_json = request.get_json()
+    start = curr_json["start"]
+    end = start + curr_json["count"]
+    transport_type = curr_json["transportType"]
+    if transport_type == "All":
+        cursor.execute('''SELECT * FROM TRANSPORT''')
+        all_transport = cursor.fetchall()
+        all_transport = all_transport[start:end + 1]
+        return all_transport
+    cursor.execute('''SELECT * FROM TRANSPORT WHERE transporttype = %s''', (transport_type,))
+    all_transport = cursor.fetchall()
+    all_transport = all_transport[start:end + 1]
+    return all_transport
+
+
+@app.get("/api/Admin/Transport/<transport_id>")
+@jwt_required()
+def admin_get_transport_data_by_id(transprot_id):
+    curr_id = get_id_from_token()
+    if not is_admin(curr_id):
+        return "Access denied", 403
+    cursor.execute("SELECT * FROM TRANSPORT WHERE id = %s", (transprot_id,))
+    curr_transport_data = cursor.fetchall()
+    curr_transport_data = curr_transport_data[0]
+    return curr_transport_data
 
 
 @app.post("/api/Transport")
-def index_add_transport(data=authorize_data):
+@jwt_required()
+def index_add_transport():
+    curr_id = get_id_from_token()
     global transport_columns_names
-    # if data["user_id"]:
     curr_json = request.get_json()
-    curr_car_parameters = [str(uuid.uuid4()), curr_json["canberented"]]
+    curr_car_parameters = [str(uuid.uuid4()), curr_json["canBeRented"]]
     for parameter in transport_columns_names[2:11]:
         curr_car_parameters.append(curr_json[str(parameter)])
-    curr_car_parameters.append(str(data["user_id"]))
-    print(curr_car_parameters)
-    cursor.execute('''INSERT INTO TRANSPORT ("id", "canberented", "transporttype", "model", "color", "identifier", 
+    curr_car_parameters.append(str(curr_id))
+    cursor.execute('''INSERT INTO TRANSPORT ("id", "canberented", "transporttype", "model", "color", "identifier",
     "description", "latitude", "longitude", "minuteprice", "dayprice", "ownerid")
     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)''', tuple(curr_car_parameters))
     connection.commit()
-    return curr_car_parameters
+    return make_dict_from_transportdata_list(curr_car_parameters)
+
+
+@app.post("/api/Admin/Transport")
+@jwt_required()
+def admin_create_transport():
+    curr_id = get_id_from_token()
+    global transport_columns_names
+    if not is_admin(curr_id):
+        return "Access denied", 403
+    curr_json = request.get_json()
+    curr_car_parameters = [str(uuid.uuid4()), curr_json["canBeRented"]]
+    for parameter in transport_columns_names[2:]:
+        curr_car_parameters.append(curr_json[str(parameter)])
+    cursor.execute('''INSERT INTO TRANSPORT ("id", "canberented", "transporttype", "model", "color", "identifier",
+        "description", "latitude", "longitude", "minuteprice", "dayprice", "ownerid")
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)''', tuple(curr_car_parameters))
+    connection.commit()
+    return "Done", 200
 
 
 @app.put("/api/Transport/<transport_id>")
-def index_update_transport(transport_id, data=authorize_data):
+@jwt_required()
+def index_update_transport(transport_id):
+    curr_id = get_id_from_token()
     global transport_columns_names
     owner_id = get_onwerid_by_transport_id(transport_id)
-    if str(owner_id) == str(data["user_id"]):
+    if str(owner_id) == str(curr_id):
         curr_json = request.get_json()
-        curr_car_parameters = [str(transport_id)]
+        curr_transport_parameters = [str(transport_id)]
         for parameter in transport_columns_names[1:11]:
-            curr_car_parameters.append(curr_json[str(parameter)])
-        curr_car_parameters.append(str(data["user_id"]))
-        print(curr_car_parameters[1:10])
-        cursor.execute('''UPDATE TRANSPORT SET "canberented" = %s, "transporttype" = %s, "model" = %s, "color" = %s, 
+            curr_transport_parameters.append(curr_json[str(parameter)])
+        curr_transport_parameters.append(str(curr_id))
+        cursor.execute('''UPDATE TRANSPORT SET "canberented" = %s, "transporttype" = %s, "model" = %s, "color" = %s,
         "identifier" = %s, "description" = %s, "latitude" = %s, "minuteprice" = %s, "dayprice" = %s''',
-                       tuple(curr_car_parameters[1:10]))
+                       tuple(curr_transport_parameters[1:10]))
         connection.commit()
         return "", 200
     return "", 403
 
 
+@app.put("/api/Admin/Transport/<transport_id>")
+@jwt_required()
+def admin_update_transport(transport_id):
+    curr_id = get_id_from_token()
+    if not is_admin(curr_id):
+        return "Access denied", 403
+    curr_json = request.get_json()
+    curr_transport_parameters = [str(transport_id)]
+    for parameter in transport_columns_names[1:]:
+        curr_transport_parameters.append(curr_json[str(parameter)])
+    cursor.execute('''UPDATE TRANSPORT SET "canberented" = %s, "transporttype" = %s, "model" = %s, "color" = %s,
+            "identifier" = %s, "description" = %s, "latitude" = %s,
+            "minuteprice" = %s, "dayprice" = %s, ownerid = %s''', tuple(curr_transport_parameters[1:10]))
+    connection.commit()
+    return "Done", 200
+
+
 @app.delete("/api/Transport/<transport_id>")
-def index_delete_transport(transport_id, data=authorize_data):
+@jwt_required()
+def index_delete_transport(transport_id):
+    curr_id = get_id_from_token()
     owner_id = get_onwerid_by_transport_id(transport_id)
-    if str(owner_id) == str(data["user_id"]):
+    if str(owner_id) == str(curr_id):
         cursor.execute("DELETE FROM TRANSPORT WHERE id = %s", (transport_id,))
         return "Deleted successfully", 200
     return "Access denied", 403
+
+
+@app.delete("/api/Admin/Transport/<transport_id>")
+@jwt_required()
+def admin_delete_transport(transport_id):
+    curr_id = get_id_from_token()
+    if not is_admin(curr_id):
+        return "Access denied", 403
+    cursor.execute("DELETE FROM TRANSPORT WHERE id = %s", (transport_id,))
+    return "Done", 200
 
 
 @app.get("/api/Rent/Transport")
@@ -247,111 +318,221 @@ def index_get_available_transport():
     y_circle = float(curr_json["long"])
     radius = float(curr_json["radius"])
 
-    def check_availability(x, y, x_circle=x_circle, y_circle=y_circle, radius=radius):
-        if (x - x_circle) ** 2 + (y - y_circle) ** 2 <= radius ** 2:
-            return True
-        return False
-
     cursor.execute("SELECT * FROM TRANSPORT")
     all_transport = cursor.fetchall()
     available_transport = [x[0] for x in all_transport if
-                           check_availability(int(x[7]), int(x[8])) and x[2] == transport_type]
+                           check_availability(int(x[7]), int(x[8]), x_circle, y_circle, radius) and x[
+                               2] == transport_type]
     return available_transport
 
 
-# @app.get("/api/Rent/<rentid>")
-# def index_get_rent_data_by_id(rentid):
-#     # TODO Обращение к бд и вывод данных по аренде
+@app.get("/api/Rent/<rentid>")
+@jwt_required()
+def index_get_rent_data(rent_id):
+    curr_id = get_id_from_token()
+    cursor.execute('''SELECT * FROM RENTS WHERE rentid = %s''', (rent_id,))
+    curr_rent_data = cursor.fetchall()
+    curr_rent_data = curr_rent_data[0]
+    if curr_rent_data[2] == curr_id or get_onwerid_by_transport_id(curr_rent_data[1]) == curr_id:
+        return curr_rent_data
+    return "Access denied", 403
+
 
 @app.get("/api/Rent/MyHistory")
-def index_get_my_rent_history(data=authorize_data):
-    # if data["user_id"]:
-    user_id = authorize_data["user_id"]
-    cursor.execute("SELECT * FROM RENTS WHERE rentorid = %s", (user_id,))
+@jwt_required()
+def index_get_my_rent_history():
+    curr_id = get_id_from_token()
+    cursor.execute("SELECT * FROM RENTS WHERE rentorid = %s", (curr_id,))
     rents = cursor.fetchall()
-    return rents, 200
+    rents = rents[0]
+    return [make_dict_from_rentdata_list(rent) for rent in rents], 200
+
+
+@app.get("/api/Admin/UserHistory/<user_id>")
+@jwt_required()
+def admin_get_user_rent_history(user_id):
+    curr_id = get_id_from_token()
+    if not is_admin(curr_id):
+        return "Access denied", 403
+    cursor.execute('''SELECT * FROM RENTS WHERE rentorid = %s''', (user_id,))
+    rents_data = cursor.fetchall()
+    rents_data = rents_data[0]
+    return rents_data, 200
 
 
 @app.get("/api/Rent/TransportHistory/<transport_id>")
-def index_get_transport_history_by_id(transport_id, data=authorize_data):
-    user_id = data["user_id"]
+@jwt_required()
+def index_get_transport_history_by_id(transport_id):
+    curr_id = get_id_from_token()
     cursor.execute("SELECT * FROM TRANSPORT WHERE id = %s", (transport_id,))
     curr_transport_data = cursor.fetchall()
-    if curr_transport_data[11] == user_id:
+    if curr_transport_data[11] == curr_id:
         cursor.execute("SELECT * FROM RENTS WHERE transportid = %s", (transport_id,))
         rents_history = cursor.fetchall()
-        return rents_history
+        rents_history = rents_history[0]
+        return [make_dict_from_rentdata_list(rent) for rent in rents_history]
     else:
         return "Access denied", 403
 
 
+@app.get("/api/Admin/TransportHistory/<transport_id>")
+@jwt_required()
+def admin_get_transport_rent_history(transport_id):
+    curr_id = get_id_from_token()
+    if not is_admin(curr_id):
+        return "Access denied", 403
+    cursor.execute('''SELECT * FROM RENTS WHERE transportid = %s''', (transport_id,))
+    rents_data = cursor.fetchall()
+    rents_data = rents_data[0]
+    output = [make_dict_from_rentdata_list(rent_data) for rent_data in rents_data]
+    return output, 200
+
+
 @app.post("/api/Rent/New/<transport_id>")
-def index_rent_transport(transport_id, data=authorize_data):
-    user_id = data["user_id"]
+@jwt_required()
+def index_rent_transport(transport_id):
+    curr_id = get_id_from_token()
     cursor.execute("SELECT * FROM TRANSPORT WHERE id = %s", (transport_id,))
     curr_transport_data = cursor.fetchall()
+    curr_transport_data = curr_transport_data[0]
     if not curr_transport_data:
         return "This transport not found", 404
-    if not curr_transport_data[0][1]:
+    if not curr_transport_data[1]:
         return "This transport can't be rented", 403
-    elif curr_transport_data[0][11] != user_id and user_id:
+    if curr_transport_data[11] != curr_id:
         curr_json = request.get_json()
-        rent_type = curr_json["renttype"]
+        rent_type = curr_json["rentType"]
         rent_id = str(uuid.uuid4())
-        print(rent_type)
         if rent_type == "Minutes":
             start = str(datetime.today().now())
+            unit_price = curr_transport_data[9]
         elif rent_type == "Days":
             start = str(datetime.today().date())
+            unit_price = curr_transport_data[0][10]
         else:
             return "Wrong Rent Type", 400
-        curr_rent_parameters = [rent_id, transport_id, user_id, rent_type, 0, start]
-        cursor.execute('''INSERT INTO RENTS ("rentid", "transportid", "rentorid", "renttype", "cost", "start")
-            VALUES (%s, %s, %s, %s, %s, %s)''', tuple(curr_rent_parameters))
-        cursor.execute('''UPDATE TRANSPORT SET canberented = %s WHERE id = %s''', (False, curr_transport_data[0][0]))
+        curr_rent_parameters = [rent_id, transport_id, curr_id, start, "Not rated", unit_price, rent_type, "Not rated"]
+        cursor.execute('''INSERT INTO RENTS ("rentid", "transportid", "rentorid", "start", "end", "untprice",
+         "pricetype", "finalprice")
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)''', tuple(curr_rent_parameters))
+        cursor.execute('''UPDATE TRANSPORT SET canberented = %s WHERE id = %s''', (False, curr_transport_data[0]))
         connection.commit()
-        return "", 200
+        return make_dict_from_rentdata_list(curr_rent_parameters), 200
     else:
         return "You can't rent your own transport", 403
 
 
+@app.post("/api/Admin/Rent")
+@jwt_required()
+def admin_create_rent():
+    curr_id = get_id_from_token()
+    if not is_admin(curr_id):
+        return "Access denied", 403
+    cj = request.get_json()
+    transport_id, user_id, time_start, time_end, price_of_unit, price_type, final_price, = (cj["transportId"],
+                                                                                            cj["userId"],
+                                                                                            cj["timeStart"],
+                                                                                            cj["timeEnd"],
+                                                                                            cj["PriceOfUnit"],
+                                                                                            cj["priceType"],
+                                                                                            cj["finalPrice"])
+    rent_id = uuid.uuid4()
+    cursor.execute('''INSERT INTO RENTS (rentid, transportid, rentorid, start, end, unitprice, pricetype, finalprice)
+    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)''', (rent_id, transport_id, user_id, time_start, time_end,
+                                                 price_of_unit, price_type, final_price))
+    connection.commit()
+    return "Done", 200
+
+
 @app.post("/api/Rent/End/<rent_id>")
-def index_end_rent_by_id(rent_id, data=authorize_data):
-    user_id = data["user_id"]
-    cursor.execute("SELECT * FROM RENTS WHERE rentid = %s", (rent_id, ))
+@jwt_required()
+def index_end_rent_by_id(rent_id):
+    curr_id = get_id_from_token()
+    cursor.execute("SELECT * FROM RENTS WHERE rentid = %s", (rent_id,))
     curr_rent_data = cursor.fetchall()
-    if curr_rent_data[0][2] == user_id:
-        price = get_rent_price_by_id(curr_rent_data[0][1], curr_rent_data[0][3])
-        if curr_rent_data[0][3] == "Minutes":
-            price = price * (datetime.now() - get_minutes_from_str(curr_rent_data[0][5]))
-            cursor.execute('''UPDATE RENTS SET cost = %s WHERE rentid = %s''', (price, curr_rent_data[0][0]))
-        if curr_rent_data[0][3] == "Days":
-            price = price * (datetime.now().day - get_days_from_str(curr_rent_data[0][5]))
-            cursor.execute('''UPDATE RENTS SET cost = %s WHERE rentid = %s''', (price, curr_rent_data[0][0]))
-        cancel_money_for_rent(user_id, price)
+    curr_rent_data = curr_rent_data[0]
+    unit_price = curr_rent_data[5]
+    if curr_rent_data[2] == curr_id:
+        if curr_rent_data[3] == "Minutes":
+            price = unit_price * (datetime.now() - get_minutes_from_str(curr_rent_data[5]))
+            cursor.execute('''UPDATE RENTS SET finalprice = %s WHERE rentid = %s''', (price, curr_rent_data[0]))
+        if curr_rent_data[3] == "Days":
+            price = unit_price * (datetime.now().day - get_days_from_str(curr_rent_data[5]))
+            cursor.execute('''UPDATE RENTS SET finalprice = %s WHERE rentid = %s''', (price, curr_rent_data[0]))
+        else:
+            return "Wrong rent type", 502
+        cancel_money_for_rent(curr_id, price)
         curr_json = request.get_json()
         latitude, longitude = curr_json["lat"], curr_json["long"]
         cursor.execute('''UPDATE TRANSPORT SET latitude = %s, longitude = %s WHERE transportid = %s''',
-                       (latitude, longitude, curr_rent_data[0][1]))
+                       (latitude, longitude, curr_rent_data[1]))
         connection.commit()
         return f"Rent was ended successful, price: {price}", 200
     else:
         return "Access denied", 403
 
+
+@app.post("/api/Admin/Rent/End/<rent_id>")
+def admin_end_rent(rent_id):
+    curr_id = get_id_from_token()
+    if not is_admin(curr_id):
+        return "Access denied", 403
+    cursor.execute("SELECT * FROM RENTS WHERE rentid = %s", (rent_id,))
+    curr_rent_data = cursor.fetchall()
+    curr_rent_data = curr_rent_data[0]
+    unit_price = curr_rent_data[5]
+    user_id = curr_rent_data[2]
+    if curr_rent_data[3] == "Minutes":
+        price = unit_price * (datetime.now() - get_minutes_from_str(curr_rent_data[5]))
+        cursor.execute('''UPDATE RENTS SET finalprice = %s WHERE rentid = %s''', (price, curr_rent_data[0]))
+    if curr_rent_data[3] == "Days":
+        price = unit_price * (datetime.now().day - get_days_from_str(curr_rent_data[5]))
+        cursor.execute('''UPDATE RENTS SET finalprice = %s WHERE rentid = %s''', (price, curr_rent_data[0]))
+    else:
+        return "Wrong rent type", 502
+    cancel_money_for_rent(user_id, price)
+    curr_json = request.get_json()
+    latitude, longitude = curr_json["lat"], curr_json["long"]
+    cursor.execute('''UPDATE TRANSPORT SET latitude = %s, longitude = %s WHERE transportid = %s''',
+                   (latitude, longitude, curr_rent_data[1]))
+    connection.commit()
+    return "Done", 200
+
+
+@app.put("/api/Admin/Rent/<rent_id>")
+@jwt_required()
+def admin_update_rent_data(rent_id):
+    curr_id = get_id_from_token()
+    if not is_admin(curr_id):
+        return "Access denied", 403
+    cj = request.get_json()
+    transport_id, user_id, time_start, time_end, price_of_unit, price_type, final_price, = (cj["transportId"],
+                                                                                            cj["userId"],
+                                                                                            cj["timeStart"],
+                                                                                            cj["timeEnd"],
+                                                                                            cj["PriceOfUnit"],
+                                                                                            cj["priceType"],
+                                                                                            cj["finalPrice"])
+    cursor.execute('''UPDATE RENTS SET rentid = %s, transportid = %s, rentorid = %s, start = %s, end = %s,
+    unitprice = %s, pricetype = %s, finalprice = %s WHERE rentid = %s''',
+                   (transport_id, user_id, time_start, time_end, price_of_unit, price_type, final_price, rent_id))
+    connection.commit()
+    return "Done", 200
+
+
 @app.post("/api/Payment/Hesoyam/<accountid>")
-def index_add_250000(accountid, data=authorize_data):
-    if data["user_id"] == "admin":
+@jwt_required()
+def index_add_250000(accountid):
+    curr_id = get_id_from_token()
+    if is_admin(curr_id):
         add_250000_to_balance(accountid)
         return "Done", 200
     else:
-        if accountid == data["user_id"]:
+        if accountid == curr_id:
             add_250000_to_balance(accountid)
             return "Done", 200
         else:
             return "Access denied", 403
-
-
-
 
 
 if __name__ == "__main__":
