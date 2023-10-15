@@ -22,6 +22,15 @@ def authenticate(username, password):
     return None
 
 
+def get_token():
+    return request.headers["Authorization"][7:]
+
+def check_token(token):
+    cursor.execute('''SELECT status FROM TOKENS WHERE token = %s''', (token, ))
+    status = cursor.fetchall()
+    status = status[0]
+    return status[0]
+
 def get_id_from_token():
     return decode_token(request.headers["Authorization"][7:])['sub']
 
