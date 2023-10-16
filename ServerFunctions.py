@@ -91,7 +91,7 @@ def check_availability(x, y, x_circle, y_circle, radius):
 
 
 def is_admin(userid):
-    cursor.execute("SELECT privileges FROM USERS WHERE id = %s", (userid,))
+    cursor.execute("SELECT privilege FROM USERS WHERE id = %s", (userid,))
     curr_user_data = cursor.fetchall()
     curr_user_data = curr_user_data[0]
     if curr_user_data[0] == "admin":
@@ -138,11 +138,11 @@ def cancel_money_for_rent(user_id, total):
 
 
 def get_minutes_from_str(string):
-    return datetime.strptime(string, "%Y-%m-%d %H:%M:%S")
+    return datetime.datetime.strptime(string, "%Y-%m-%d %H:%M:%S")
 
 
 def get_days_from_str(string):
-    return datetime.strptime(string, "%Y-%m-%d").day
+    return datetime.datetime.strptime(string, "%Y-%m-%d").day
 
 
 def get_onwerid_by_transport_id(transport_id):

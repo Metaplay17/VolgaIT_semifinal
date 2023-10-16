@@ -124,3 +124,8 @@ def create_admin():
 # delete_table_tokens()
 # create_table_tokens()
 # show_table_tokens()
+# delete_table_rents()
+# create_table_rents()
+# delete_table_transport()
+# create_table_transport()
+# show_table_transport()

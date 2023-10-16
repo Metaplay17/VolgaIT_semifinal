@@ -1,7 +1,7 @@
 from flask import Flask, request, jsonify
 import uuid
 import psycopg2
-from datetime import datetime
+import datetime
 from flask_jwt_extended import create_access_token, jwt_required, JWTManager, get_jwt
 from ServerFunctions import *
 
@@ -21,7 +21,7 @@ transport_columns_names = [
     "longitude",
     "minutePrice",
     "dayPrice",
-    "ownerid",
+    "ownerId",
 ]
 
 user_parameters = ["id", "username", "password", "privilege"]
@@ -291,7 +291,7 @@ def admin_create_transport():
         tuple(curr_car_parameters),
     )
     connection.commit()
-    return "Done", 200
+    return make_dict_from_transportdata_list(curr_car_parameters), 200
 
 
 @app.put("/api/Transport/<transport_id>")
@@ -312,7 +312,7 @@ def index_update_transport(transport_id):
             tuple(curr_transport_parameters[1:10]),
         )
         connection.commit()
-        return "", 200
+        return make_dict_from_transportdata_list(curr_transport_parameters), 200
     return "", 403
 
 
@@ -325,7 +325,8 @@ def admin_update_transport(transport_id):
     curr_json = request.get_json()
     curr_transport_parameters = [str(transport_id)]
     for parameter in transport_columns_names[1:]:
-        curr_transport_parameters.append(curr_json[str(parameter)])
+        if parameter != 'transportType':
+            curr_transport_parameters.append(curr_json[str(parameter)])
     cursor.execute(
         """UPDATE TRANSPORT SET "canberented" = %s, "transporttype" = %s, "model" = %s, "color" = %s,
             "identifier" = %s, "description" = %s, "latitude" = %s,
@@ -370,13 +371,13 @@ def index_get_available_transport():
     available_transport = [
         x[0]
         for x in all_transport
-        if check_availability(int(x[7]), int(x[8]), x_circle, y_circle, radius)
+        if check_availability(float(x[7]), float(x[8]), x_circle, y_circle, radius)
         and x[2] == transport_type
     ]
     return available_transport
 
 
-@app.get("/api/Rent/<rentid>")
+@app.get("/api/Rent/<rent_id>")
 @jwt_required()
 def index_get_rent_data(rent_id):
     curr_id = get_id_from_token()
@@ -387,7 +388,7 @@ def index_get_rent_data(rent_id):
         curr_rent_data[2] == curr_id
         or get_onwerid_by_transport_id(curr_rent_data[1]) == curr_id
     ):
-        return curr_rent_data
+        return make_dict_from_rentdata_list(curr_rent_data), 200
     return "Access denied", 403
 
 
@@ -397,7 +398,6 @@ def index_get_my_rent_history():
     curr_id = get_id_from_token()
     cursor.execute("SELECT * FROM RENTS WHERE rentorid = %s", (curr_id,))
     rents = cursor.fetchall()
-    rents = rents[0]
     return [make_dict_from_rentdata_list(rent) for rent in rents], 200
 
 
@@ -409,8 +409,7 @@ def admin_get_user_rent_history(user_id):
         return "Access denied", 403
     cursor.execute("""SELECT * FROM RENTS WHERE rentorid = %s""", (user_id,))
     rents_data = cursor.fetchall()
-    rents_data = rents_data[0]
-    return rents_data, 200
+    return [make_dict_from_rentdata_list(rent) for rent in rents_data], 200
 
 
 @app.get("/api/Rent/TransportHistory/<transport_id>")
@@ -419,10 +418,10 @@ def index_get_transport_history_by_id(transport_id):
     curr_id = get_id_from_token()
     cursor.execute("SELECT * FROM TRANSPORT WHERE id = %s", (transport_id,))
     curr_transport_data = cursor.fetchall()
+    curr_transport_data = curr_transport_data[0]
     if curr_transport_data[11] == curr_id:
         cursor.execute("SELECT * FROM RENTS WHERE transportid = %s", (transport_id,))
         rents_history = cursor.fetchall()
-        rents_history = rents_history[0]
         return [make_dict_from_rentdata_list(rent) for rent in rents_history]
     else:
         return "Access denied", 403
@@ -436,7 +435,6 @@ def admin_get_transport_rent_history(transport_id):
         return "Access denied", 403
     cursor.execute("""SELECT * FROM RENTS WHERE transportid = %s""", (transport_id,))
     rents_data = cursor.fetchall()
-    rents_data = rents_data[0]
     output = [make_dict_from_rentdata_list(rent_data) for rent_data in rents_data]
     return output, 200
 
@@ -457,10 +455,10 @@ def index_rent_transport(transport_id):
         rent_type = curr_json["rentType"]
         rent_id = str(uuid.uuid4())
         if rent_type == "Minutes":
-            start = str(datetime.today().now())
+            start = str(datetime.datetime.today().now())[:19]
             unit_price = curr_transport_data[9]
         elif rent_type == "Days":
-            start = str(datetime.today().date())
+            start = str(datetime.datetime.today().date())
             unit_price = curr_transport_data[0][10]
         else:
             return "Wrong Rent Type", 400
@@ -472,11 +470,11 @@ def index_rent_transport(transport_id):
             "Not rated",
             unit_price,
             rent_type,
-            "Not rated",
+            0,
         ]
         cursor.execute(
-            """INSERT INTO RENTS ("rentid", "transportid", "rentorid", "start", "end", "untprice",
-         "pricetype", "finalprice")
+            """INSERT INTO RENTS ("rentid", "transportid", "rentorid", "start", "ending", "unitprice",
+         "renttype", "finalprice")
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
             tuple(curr_rent_parameters),
         )
@@ -510,18 +508,18 @@ def admin_create_rent():
         cj["userId"],
         cj["timeStart"],
         cj["timeEnd"],
-        cj["PriceOfUnit"],
+        cj["priceOfUnit"],
         cj["priceType"],
         cj["finalPrice"],
     )
     rent_id = uuid.uuid4()
     cursor.execute(
-        """INSERT INTO RENTS (rentid, transportid, rentorid, start, end, unitprice, pricetype, finalprice)
+        """INSERT INTO RENTS (rentid, transportid, rentorid, start, ending, unitprice, renttype, finalprice)
     VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
         (
-            rent_id,
-            transport_id,
-            user_id,
+            str(rent_id),
+            str(transport_id),
+            str(user_id),
             time_start,
             time_end,
             price_of_unit,
@@ -530,29 +528,29 @@ def admin_create_rent():
         ),
     )
     connection.commit()
-    return "Done", 200
+    return cj, 200
 
 
 @app.post("/api/Rent/End/<rent_id>")
 @jwt_required()
 def index_end_rent_by_id(rent_id):
     curr_id = get_id_from_token()
-    cursor.execute("SELECT * FROM RENTS WHERE rentid = %s", (rent_id,))
+    cursor.execute("SELECT * FROM RENTS WHERE rentid = %s", (rent_id, ))
     curr_rent_data = cursor.fetchall()
+    print(curr_rent_data)
     curr_rent_data = curr_rent_data[0]
     unit_price = curr_rent_data[5]
     if curr_rent_data[2] == curr_id:
-        if curr_rent_data[3] == "Minutes":
-            price = unit_price * (
-                datetime.now() - get_minutes_from_str(curr_rent_data[5])
-            )
+        if curr_rent_data[6] == "Minutes":
+            difference = datetime.datetime.now() - get_minutes_from_str(curr_rent_data[3])
+            price = unit_price * difference.total_seconds() // 60
             cursor.execute(
                 """UPDATE RENTS SET finalprice = %s WHERE rentid = %s""",
                 (price, curr_rent_data[0]),
             )
-        if curr_rent_data[3] == "Days":
+        elif curr_rent_data[6] == "Days":
             price = unit_price * (
-                datetime.now().day - get_days_from_str(curr_rent_data[5])
+                datetime.datetime.now().day - get_days_from_str(curr_rent_data[5])
             )
             cursor.execute(
                 """UPDATE RENTS SET finalprice = %s WHERE rentid = %s""",
@@ -564,11 +562,13 @@ def index_end_rent_by_id(rent_id):
         curr_json = request.get_json()
         latitude, longitude = curr_json["lat"], curr_json["long"]
         cursor.execute(
-            """UPDATE TRANSPORT SET latitude = %s, longitude = %s WHERE transportid = %s""",
+            """UPDATE TRANSPORT SET latitude = %s, longitude = %s WHERE id = %s""",
             (latitude, longitude, curr_rent_data[1]),
         )
         connection.commit()
-        return f"Rent was ended successful, price: {price}", 200
+        return {
+            "price": price
+        }, 200
     else:
         return "Access denied", 403
 
@@ -584,13 +584,13 @@ def admin_end_rent(rent_id):
     unit_price = curr_rent_data[5]
     user_id = curr_rent_data[2]
     if curr_rent_data[3] == "Minutes":
-        price = unit_price * (datetime.now() - get_minutes_from_str(curr_rent_data[5]))
+        price = unit_price * (datetime.datetime.now() - get_minutes_from_str(curr_rent_data[5]))
         cursor.execute(
             """UPDATE RENTS SET finalprice = %s WHERE rentid = %s""",
             (price, curr_rent_data[0]),
         )
     if curr_rent_data[3] == "Days":
-        price = unit_price * (datetime.now().day - get_days_from_str(curr_rent_data[5]))
+        price = unit_price * (datetime.datetime.now().day - get_days_from_str(curr_rent_data[5]))
         cursor.execute(
             """UPDATE RENTS SET finalprice = %s WHERE rentid = %s""",
             (price, curr_rent_data[0]),
