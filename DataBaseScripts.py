@@ -48,9 +48,9 @@ def delete_table_users():
 
 def create_table_transport():
     create_table_query = """CREATE TABLE TRANSPORT 
-    (id TEXT, canBeRented BOOLEAN, transportType TEXT, model TEXT,
+    (id TEXT, canberented BOOLEAN, transporttype TEXT, model TEXT,
     color TEXT, identifier TEXT, description TEXT, latitude TEXT,
-    longitude TEXT, minutePrice TEXT, dayPrice TEXT, ownerid TEXT)"""
+    longitude TEXT, minuteprice TEXT, dayprice TEXT, ownerid TEXT)"""
     cursor.execute(create_table_query)
     connection.commit()
     print("Table TRANSPORT have been created successfully")
@@ -120,12 +120,11 @@ def delete_table_tokens():
 def create_admin():
     cursor.execute('''INSERT INTO USERS (id, username, password, privilege) VALUES (%s, %s, %s, %s)''',
                    ("0", "admin", "1234", "admin"))
+    connection.commit()
 
-# delete_table_tokens()
-# create_table_tokens()
-# show_table_tokens()
-# delete_table_rents()
-# create_table_rents()
-# delete_table_transport()
-# create_table_transport()
-# show_table_transport()
+def show_column_names():
+    cursor.execute("Select * FROM TRANSPORT LIMIT 0")
+    colnames = [desc[0] for desc in cursor.description]
+    print(colnames)
+
+show_table_transport()

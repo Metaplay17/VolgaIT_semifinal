@@ -62,6 +62,11 @@ def make_dict_from_rentdata_list(rentdata_list):
     return d
 
 
+def get_set_of_user_id():
+    cursor.execute('''SELECT id FROM USERS''')
+    cursor.fetchall()
+
+
 def make_dict_from_transportdata_list(transportdata_list):
     d = dict()
     d["id"] = transportdata_list[0],
@@ -77,6 +82,23 @@ def make_dict_from_transportdata_list(transportdata_list):
     d["dayPrice"] = transportdata_list[10],
     d["ownerID"] = transportdata_list[11]
     return d
+
+def make_list_from_transportdata_dict(data):
+    curr_transport_data = []
+    curr_transport_data.append(data["id"])
+    curr_transport_data.append(data["canBeRented"])
+    curr_transport_data.append(data["transportType"])
+    curr_transport_data.append(data["model"])
+    curr_transport_data.append(data["color"])
+    curr_transport_data.append(data["identifier"])
+    curr_transport_data.append(data["description"])
+    curr_transport_data.append(float(data["latitude"]))
+    curr_transport_data.append(float(data["longitude"]))
+    curr_transport_data.append(float(data["minutePrice"]))
+    curr_transport_data.append(float(data["dayPrice"]))
+    curr_transport_data.append(data["ownerID"])
+    print(curr_transport_data)
+    return curr_transport_data
 
 def get_set_of_usernames():
     cursor.execute("SELECT USERNAME FROM USERS")

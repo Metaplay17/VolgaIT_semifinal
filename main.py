@@ -1,12 +1,15 @@
 from flask import Flask, request, jsonify
+from flask_cors import CORS, cross_origin
 import uuid
 import psycopg2
-import datetime
 from flask_jwt_extended import create_access_token, jwt_required, JWTManager, get_jwt
 from ServerFunctions import *
 
 app = Flask(__name__)
+cors = CORS(app)
 app.config["SECRET_KEY"] = "secret-key"
+app.config["CORS_HEADERS"] = "Content-Type"
+app.config["JWT_ACCESS_TOKEN_EXPIRES"] = datetime.timedelta(minutes=60)
 jwt = JWTManager(app)
 
 transport_columns_names = [
@@ -21,33 +24,36 @@ transport_columns_names = [
     "longitude",
     "minutePrice",
     "dayPrice",
-    "ownerId",
+    "ownerID",
 ]
 
 user_parameters = ["id", "username", "password", "privilege"]
 
 
-def authenticate(username, password):
-    curr_json = request.get_json()
-    curr_username = curr_json["username"]
-    curr_password = curr_json["password"]
-    cursor.execute(
-        "SELECT password, id FROM USERS WHERE username = %s", (curr_username,)
-    )
-    user_password = cursor.fetchall()
-    user_password = user_password[0]
-    if user_password[0] == curr_password:
-        cursor.execute("SELECT * FROM USERS WHERE username = %s", (curr_username,))
-        curr_user_data = cursor.fetchall()
-        curr_user_data = curr_user_data[0]
-        return curr_user_data
-    return None
+def authenticate(curr_json):
+    try:
+        curr_username = curr_json["username"]
+        curr_password = curr_json["password"]
+        cursor.execute(
+            "SELECT password, id FROM USERS WHERE username = %s", (curr_username,)
+        )
+        user_password = cursor.fetchall()
+        user_password = user_password[0]
+    except IndexError:
+        return None
+    else:
+        if user_password[0] == curr_password:
+            cursor.execute("SELECT * FROM USERS WHERE username = %s", (curr_username,))
+            curr_user_data = cursor.fetchall()
+            curr_user_data = curr_user_data[0]
+            return curr_user_data
+        return None
 
 
 @app.get("/api/Account/Me")
 @jwt_required()
+@cross_origin()
 def index_account_me():
-    print(get_token())
     if check_token(get_token()):
         curr_id = get_id_from_token()
         return get_all_user_data_by_id(curr_id)
@@ -57,6 +63,8 @@ def index_account_me():
 @app.get("/api/Admin/Account")
 @jwt_required()
 def admin_get_all_accounts():
+    if not check_token(get_token()):
+        return "NOT VALID TOKEN", 401
     curr_id = get_id_from_token()
     if is_admin(curr_id):
         cursor.execute("""SELECT * FROM USERS""")
@@ -68,23 +76,29 @@ def admin_get_all_accounts():
 @app.get("/api/Admin/Account/<user_id>")
 @jwt_required()
 def admin_get_account_data(user_id):
+    if not check_token(get_token()):
+        return "NOT VALID TOKEN", 401
     curr_id = get_id_from_token()
     if not is_admin(curr_id):
         return "Access denied", 403
-    cursor.execute("""SELECT * FROM USERS WHERE userid = %s""", (user_id,))
-    return cursor.fetchall()
+    cursor.execute("""SELECT * FROM USERS WHERE id = %s""", (user_id,))
+    output = cursor.fetchall()
+    output = output[0]
+    return make_dict_from_userdata_list(output)
 
 
 @app.post("/api/Account/SignIn")
+@cross_origin()
 def index_sign_in():
     curr_json = request.get_json()
-    data = authenticate(curr_json["username"], curr_json["password"])
+    data = authenticate(curr_json)
+    print(data)
     if data:
         curr_token = create_access_token(identity=data[0])
         cursor.execute('''INSERT INTO TOKENS (token, status) VALUES (%s, %s)''', (str(curr_token), True))
         connection.commit()
         return {"token": curr_token}, 200
-    return "", 403
+    return "This user/password combination Not Found", 404
 
 
 @app.post("/api/Account/SignUp")
@@ -114,8 +128,10 @@ def index_sign_up():
 
 
 @app.post("/api/Admin/Account")
-@jwt_required
+@jwt_required()
 def admin_create_account():
+    if not check_token(get_token()):
+        return "NOT VALID TOKEN", 401
     curr_id = get_id_from_token()
     if not is_admin(curr_id):
         return "Access denied", 403
@@ -123,7 +139,7 @@ def admin_create_account():
     username = curr_json["username"]
     if username in get_set_of_usernames():
         return "This username is already used", 409
-    user_id = uuid.uuid4()
+    user_id = str(uuid.uuid4())
     password = curr_json["password"]
     isadmin = "admin" if curr_json["isAdmin"] else "user"
     balance = curr_json["balance"]
@@ -135,17 +151,22 @@ def admin_create_account():
         "INSERT INTO BALANCES (userid, balance) VALUES (%s, %s)", (user_id, balance)
     )
     connection.commit()
+    return "", 200
 
 
 @app.post("/api/Account/SignOut")
 @jwt_required()
 def index_sign_out():
+    if not check_token(get_token()):
+        return "NOT VALID TOKEN", 401
     cursor.execute('''UPDATE TOKENS SET status = %s WHERE token = %s''', (False, get_token()))
+    connection.commit()
     return "", 200
 
 
 @app.put("/api/Account/Update")
 @jwt_required()
+@cross_origin()
 def index_update_account():
     if check_token(get_token()):
         curr_id = get_id_from_token()
@@ -162,7 +183,7 @@ def index_update_account():
             )
             return "", 200
         return "Username is already used", 409
-    return "", 401
+    return "NOT VALID TOKEN", 401
 
 
 @app.put("/api/Admin/Account/<user_id>")
@@ -180,7 +201,7 @@ def admin_change_account(user_id):
         new_privilege = "admin" if curr_json["isAdmin"] else "user"
         new_balance = curr_json["balance"]
         cursor.execute(
-            """UPDATE USERS SET username = %s, password = %s, privilege = % WHERE id = %""",
+            """UPDATE USERS SET username = %s, password = %s, privilege = %s WHERE id = %s""",
             (new_username, new_password, new_privilege, user_id),
         )
         cursor.execute(
@@ -194,16 +215,20 @@ def admin_change_account(user_id):
 @app.delete("/api/Admin/Account/<user_id>")
 @jwt_required()
 def admin_delete_account(user_id):
+    if not check_token(get_token()):
+        return "NOT VALID TOKEN", 401
     curr_id = get_id_from_token()
     if not is_admin(curr_id):
         return "Access denied", 403
     cursor.execute("DELETE FROM USERS WHERE id = %s", (user_id,))
-    cursor.execute("DELETE FROM BALANCES WHERE id = %s", (user_id,))
+    cursor.execute("DELETE FROM BALANCES WHERE userid = %s", (user_id,))
     connection.commit()
     return "Done", 200
 
 
+
 @app.get("/api/Transport/<transport_id>")
+@cross_origin()
 def index_get_transport_data_by_id(transport_id):
     global transport_columns_names
     cursor.execute("SELECT * FROM TRANSPORT WHERE id = %s", (str(transport_id),))
@@ -211,16 +236,17 @@ def index_get_transport_data_by_id(transport_id):
     curr_transport_data = curr_transport_data[0]
     if len(curr_transport_data) != 0:
         output = dict()
-        for i in range(1, 12):
+        for i in range(12):
             output[transport_columns_names[i]] = curr_transport_data[i]
-        print(output)
-        return output
+        return output, 200
     return "There is no this transport in database", 404
 
 
 @app.get("/api/Admin/Transport")
 @jwt_required()
 def admin_get_transport_list():
+    if not check_token(get_token()):
+        return "NOT VALID TOKEN", 401
     curr_id = get_id_from_token()
     if not is_admin(curr_id):
         return "Access denied", 403
@@ -232,30 +258,35 @@ def admin_get_transport_list():
         cursor.execute("""SELECT * FROM TRANSPORT""")
         all_transport = cursor.fetchall()
         all_transport = all_transport[start : end + 1]
-        return all_transport
+        return [make_dict_from_transportdata_list(transport) for transport in all_transport]
     cursor.execute(
         """SELECT * FROM TRANSPORT WHERE transporttype = %s""", (transport_type,)
     )
     all_transport = cursor.fetchall()
+    all_transport = all_transport[0]
+    print(all_transport)
     all_transport = all_transport[start : end + 1]
-    return all_transport
+    return [make_dict_from_transportdata_list(transport) for transport in all_transport]
 
 
 @app.get("/api/Admin/Transport/<transport_id>")
 @jwt_required()
-def admin_get_transport_data_by_id(transprot_id):
+def admin_get_transport_data_by_id(transport_id):
     curr_id = get_id_from_token()
     if not is_admin(curr_id):
         return "Access denied", 403
-    cursor.execute("SELECT * FROM TRANSPORT WHERE id = %s", (transprot_id,))
+    cursor.execute("SELECT * FROM TRANSPORT WHERE id = %s", (transport_id,))
     curr_transport_data = cursor.fetchall()
     curr_transport_data = curr_transport_data[0]
-    return curr_transport_data
+    return make_dict_from_transportdata_list(curr_transport_data)
 
 
 @app.post("/api/Transport")
 @jwt_required()
+@cross_origin()
 def index_add_transport():
+    if not check_token(get_token()):
+        return "NOT VALID TOKEN", 401
     curr_id = get_id_from_token()
     global transport_columns_names
     curr_json = request.get_json()
@@ -276,6 +307,8 @@ def index_add_transport():
 @app.post("/api/Admin/Transport")
 @jwt_required()
 def admin_create_transport():
+    if not check_token(get_token()):
+        return "NOT VALID TOKEN", 401
     curr_id = get_id_from_token()
     global transport_columns_names
     if not is_admin(curr_id):
@@ -296,42 +329,51 @@ def admin_create_transport():
 
 @app.put("/api/Transport/<transport_id>")
 @jwt_required()
+@cross_origin()
 def index_update_transport(transport_id):
+    if not check_token(get_token()):
+        return "NOT VALID TOKEN", 401
     curr_id = get_id_from_token()
     global transport_columns_names
     owner_id = get_onwerid_by_transport_id(transport_id)
     if str(owner_id) == str(curr_id):
+        cursor.execute('''SELECT * FROM TRANSPORT WHERE id = %s''', (transport_id, ))
+        transportdata_list = cursor.fetchall()
+        transportdata_list = transportdata_list[0]
+        old_transport_data = make_dict_from_transportdata_list(transportdata_list)
         curr_json = request.get_json()
-        curr_transport_parameters = [str(transport_id)]
+        print(old_transport_data)
         for parameter in transport_columns_names[1:11]:
-            curr_transport_parameters.append(curr_json[str(parameter)])
-        curr_transport_parameters.append(str(curr_id))
+            if parameter != "transportType" and parameter != "ownerID" and parameter != "id":
+                old_transport_data[str(parameter)] = curr_json[str(parameter)]
         cursor.execute(
-            """UPDATE TRANSPORT SET "canberented" = %s, "transporttype" = %s, "model" = %s, "color" = %s,
-        "identifier" = %s, "description" = %s, "latitude" = %s, "minuteprice" = %s, "dayprice" = %s""",
-            tuple(curr_transport_parameters[1:10]),
+            """UPDATE TRANSPORT SET "id" = %s, "canberented" = %s, "transporttype" = %s, "model" = %s, "color" = %s,
+        "identifier" = %s, "description" = %s, "latitude" = %s, "longitude" = %s, "minuteprice" = %s, 
+        "dayprice" = %s, ownerid = %s""",
+            tuple(make_list_from_transportdata_dict(old_transport_data)),
         )
         connection.commit()
-        return make_dict_from_transportdata_list(curr_transport_parameters), 200
-    return "", 403
+        return old_transport_data, 200
+    return "Access denied", 403
 
 
 @app.put("/api/Admin/Transport/<transport_id>")
 @jwt_required()
 def admin_update_transport(transport_id):
+    if not check_token(get_token()):
+        return "NOT VALID TOKEN", 401
     curr_id = get_id_from_token()
     if not is_admin(curr_id):
         return "Access denied", 403
     curr_json = request.get_json()
     curr_transport_parameters = [str(transport_id)]
     for parameter in transport_columns_names[1:]:
-        if parameter != 'transportType':
-            curr_transport_parameters.append(curr_json[str(parameter)])
+        curr_transport_parameters.append(curr_json[str(parameter)])
     cursor.execute(
         """UPDATE TRANSPORT SET "canberented" = %s, "transporttype" = %s, "model" = %s, "color" = %s,
             "identifier" = %s, "description" = %s, "latitude" = %s,
             "minuteprice" = %s, "dayprice" = %s, ownerid = %s""",
-        tuple(curr_transport_parameters[1:10]),
+        tuple(curr_transport_parameters[1:11]),
     )
     connection.commit()
     return "Done", 200
@@ -340,8 +382,13 @@ def admin_update_transport(transport_id):
 @app.delete("/api/Transport/<transport_id>")
 @jwt_required()
 def index_delete_transport(transport_id):
+    if not check_token(get_token()):
+        return "NOT VALID TOKEN", 401
     curr_id = get_id_from_token()
-    owner_id = get_onwerid_by_transport_id(transport_id)
+    try:
+        owner_id = get_onwerid_by_transport_id(transport_id)
+    except IndexError:
+        return "This transport not found", 404
     if str(owner_id) == str(curr_id):
         cursor.execute("DELETE FROM TRANSPORT WHERE id = %s", (transport_id,))
         return "Deleted successfully", 200
@@ -351,10 +398,13 @@ def index_delete_transport(transport_id):
 @app.delete("/api/Admin/Transport/<transport_id>")
 @jwt_required()
 def admin_delete_transport(transport_id):
+    if not check_token(get_token()):
+        return "NOT VALID TOKEN", 401
     curr_id = get_id_from_token()
     if not is_admin(curr_id):
         return "Access denied", 403
     cursor.execute("DELETE FROM TRANSPORT WHERE id = %s", (transport_id,))
+    connection.commit()
     return "Done", 200
 
 
@@ -380,6 +430,8 @@ def index_get_available_transport():
 @app.get("/api/Rent/<rent_id>")
 @jwt_required()
 def index_get_rent_data(rent_id):
+    if not check_token(get_token()):
+        return "NOT VALID TOKEN", 401
     curr_id = get_id_from_token()
     cursor.execute("""SELECT * FROM RENTS WHERE rentid = %s""", (rent_id,))
     curr_rent_data = cursor.fetchall()
@@ -395,15 +447,32 @@ def index_get_rent_data(rent_id):
 @app.get("/api/Rent/MyHistory")
 @jwt_required()
 def index_get_my_rent_history():
+    if not check_token(get_token()):
+        return "NOT VALID TOKEN", 401
     curr_id = get_id_from_token()
     cursor.execute("SELECT * FROM RENTS WHERE rentorid = %s", (curr_id,))
     rents = cursor.fetchall()
     return [make_dict_from_rentdata_list(rent) for rent in rents], 200
 
+@app.get("/api/Admin/Rent/<rent_id>")
+@jwt_required()
+def admin_get_rent_data(rent_id):
+    if not check_token(get_token()):
+        return "NOT VALID TOKEN", 401
+    curr_id = get_id_from_token()
+    if not is_admin(curr_id):
+        return "Access denied", 403
+    cursor.execute('''SELECT * FROM RENTS WHERE rentid = %s''', (rent_id, ))
+    curr_rent_data = cursor.fetchall()
+    curr_rent_data = curr_rent_data[0]
+    return make_dict_from_rentdata_list(curr_rent_data)
+
 
 @app.get("/api/Admin/UserHistory/<user_id>")
 @jwt_required()
 def admin_get_user_rent_history(user_id):
+    if not check_token(get_token()):
+        return "NOT VALID TOKEN", 401
     curr_id = get_id_from_token()
     if not is_admin(curr_id):
         return "Access denied", 403
@@ -415,6 +484,8 @@ def admin_get_user_rent_history(user_id):
 @app.get("/api/Rent/TransportHistory/<transport_id>")
 @jwt_required()
 def index_get_transport_history_by_id(transport_id):
+    if not check_token(get_token()):
+        return "NOT VALID TOKEN", 401
     curr_id = get_id_from_token()
     cursor.execute("SELECT * FROM TRANSPORT WHERE id = %s", (transport_id,))
     curr_transport_data = cursor.fetchall()
@@ -430,6 +501,8 @@ def index_get_transport_history_by_id(transport_id):
 @app.get("/api/Admin/TransportHistory/<transport_id>")
 @jwt_required()
 def admin_get_transport_rent_history(transport_id):
+    if not check_token(get_token()):
+        return "NOT VALID TOKEN", 401
     curr_id = get_id_from_token()
     if not is_admin(curr_id):
         return "Access denied", 403
@@ -442,6 +515,8 @@ def admin_get_transport_rent_history(transport_id):
 @app.post("/api/Rent/New/<transport_id>")
 @jwt_required()
 def index_rent_transport(transport_id):
+    if not check_token(get_token()):
+        return "NOT VALID TOKEN", 401
     curr_id = get_id_from_token()
     cursor.execute("SELECT * FROM TRANSPORT WHERE id = %s", (transport_id, ))
     curr_transport_data = cursor.fetchall()
@@ -491,6 +566,8 @@ def index_rent_transport(transport_id):
 @app.post("/api/Admin/Rent")
 @jwt_required()
 def admin_create_rent():
+    if not check_token(get_token()):
+        return "NOT VALID TOKEN", 401
     curr_id = get_id_from_token()
     if not is_admin(curr_id):
         return "Access denied", 403
@@ -504,8 +581,8 @@ def admin_create_rent():
         price_type,
         final_price,
     ) = (
-        cj["transportId"],
-        cj["userId"],
+        cj["transportID"],
+        cj["userID"],
         cj["timeStart"],
         cj["timeEnd"],
         cj["priceOfUnit"],
@@ -534,10 +611,11 @@ def admin_create_rent():
 @app.post("/api/Rent/End/<rent_id>")
 @jwt_required()
 def index_end_rent_by_id(rent_id):
+    if not check_token(get_token()):
+        return "NOT VALID TOKEN", 401
     curr_id = get_id_from_token()
     cursor.execute("SELECT * FROM RENTS WHERE rentid = %s", (rent_id, ))
     curr_rent_data = cursor.fetchall()
-    print(curr_rent_data)
     curr_rent_data = curr_rent_data[0]
     unit_price = curr_rent_data[5]
     if curr_rent_data[2] == curr_id:
@@ -559,6 +637,9 @@ def index_end_rent_by_id(rent_id):
         else:
             return "Wrong rent type", 502
         cancel_money_for_rent(curr_id, price)
+        cursor.execute(
+            """UPDATE RENTS SET ending = %s WHERE rentid = %s""",
+            (str(datetime.datetime.now()), curr_rent_data[0]))
         curr_json = request.get_json()
         latitude, longitude = curr_json["lat"], curr_json["long"]
         cursor.execute(
@@ -574,7 +655,10 @@ def index_end_rent_by_id(rent_id):
 
 
 @app.post("/api/Admin/Rent/End/<rent_id>")
+@jwt_required()
 def admin_end_rent(rent_id):
+    if not check_token(get_token()):
+        return "NOT VALID TOKEN", 401
     curr_id = get_id_from_token()
     if not is_admin(curr_id):
         return "Access denied", 403
@@ -583,25 +667,25 @@ def admin_end_rent(rent_id):
     curr_rent_data = curr_rent_data[0]
     unit_price = curr_rent_data[5]
     user_id = curr_rent_data[2]
-    if curr_rent_data[3] == "Minutes":
-        price = unit_price * (datetime.datetime.now() - get_minutes_from_str(curr_rent_data[5]))
+    if curr_rent_data[6] == "Minutes":
+        price = unit_price * (datetime.datetime.now() - get_minutes_from_str(curr_rent_data[3]))
         cursor.execute(
             """UPDATE RENTS SET finalprice = %s WHERE rentid = %s""",
             (price, curr_rent_data[0]),
         )
-    if curr_rent_data[3] == "Days":
-        price = unit_price * (datetime.datetime.now().day - get_days_from_str(curr_rent_data[5]))
+    elif curr_rent_data[6] == "Days":
+        price = unit_price * (datetime.datetime.now().day - get_days_from_str(curr_rent_data[3]))
         cursor.execute(
             """UPDATE RENTS SET finalprice = %s WHERE rentid = %s""",
             (price, curr_rent_data[0]),
         )
     else:
-        return "Wrong rent type", 502
+        return "Wrong Rent Type", 502
     cancel_money_for_rent(user_id, price)
     curr_json = request.get_json()
     latitude, longitude = curr_json["lat"], curr_json["long"]
     cursor.execute(
-        """UPDATE TRANSPORT SET latitude = %s, longitude = %s WHERE transportid = %s""",
+        """UPDATE TRANSPORT SET latitude = %s, longitude = %s WHERE id = %s""",
         (latitude, longitude, curr_rent_data[1]),
     )
     connection.commit()
@@ -611,6 +695,8 @@ def admin_end_rent(rent_id):
 @app.put("/api/Admin/Rent/<rent_id>")
 @jwt_required()
 def admin_update_rent_data(rent_id):
+    if not check_token(get_token()):
+        return "NOT VALID TOKEN", 401
     curr_id = get_id_from_token()
     if not is_admin(curr_id):
         return "Access denied", 403
@@ -624,17 +710,17 @@ def admin_update_rent_data(rent_id):
         price_type,
         final_price,
     ) = (
-        cj["transportId"],
-        cj["userId"],
+        cj["transportID"],
+        cj["userID"],
         cj["timeStart"],
         cj["timeEnd"],
-        cj["PriceOfUnit"],
+        cj["priceOfUnit"],
         cj["priceType"],
         cj["finalPrice"],
     )
     cursor.execute(
-        """UPDATE RENTS SET rentid = %s, transportid = %s, rentorid = %s, start = %s, end = %s,
-    unitprice = %s, pricetype = %s, finalprice = %s WHERE rentid = %s""",
+        """UPDATE RENTS SET transportid = %s, rentorid = %s, start = %s, ending = %s,
+    unitprice = %s, renttype = %s, finalprice = %s WHERE rentid = %s""",
         (
             transport_id,
             user_id,
@@ -650,16 +736,18 @@ def admin_update_rent_data(rent_id):
     return "Done", 200
 
 
-@app.post("/api/Payment/Hesoyam/<accountid>")
+@app.post("/api/Payment/Hesoyam/<account_id>")
 @jwt_required()
-def index_add_250000(accountid):
+def index_add_250000(account_id):
+    if not check_token(get_token()):
+        return "NOT VALID TOKEN", 401
     curr_id = get_id_from_token()
     if is_admin(curr_id):
-        add_250000_to_balance(accountid)
+        add_250000_to_balance(account_id)
         return "Done", 200
     else:
-        if accountid == curr_id:
-            add_250000_to_balance(accountid)
+        if account_id == curr_id:
+            add_250000_to_balance(account_id)
             return "Done", 200
         else:
             return "Access denied", 403
