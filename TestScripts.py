@@ -424,7 +424,8 @@ def test_admin_update_rent(header, rent_id, url=root):
     else:
         print(f"Test 'Admin Update Rent' ERROR: {rqst.status_code}")
 
-test_sign_in("tester", "1234")
+test_admin_sign_in()
+test_admin_create_transport(headers)
 
 
 
